@@ -1,0 +1,38 @@
+id = "herdr-custom-commands"
+name = "Herdr Custom Commands"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "A panel of your own commands beside every workspace"
+platforms = ["linux", "macos"]
+
+# bin/hcc selects the binary built for this machine.
+[[startup]]
+command = ["./bin/hcc", "startup"]
+
+# No workspace exists at startup, so the same check runs on workspace.created.
+[[events]]
+on = "workspace.created"
+command = ["./bin/hcc", "startup"]
+
+[[actions]]
+id = "run"
+title = "Run custom command"
+description = "Internal: runs the command the panel hands over"
+contexts = ["workspace"]
+command = ["./bin/hcc", "run"]
+
+[[panes]]
+id = "panel"
+title = "Custom Commands"
+description = "Click a command to run it in this workspace"
+placement = "split"
+command = ["./bin/hcc", "panel"]
+
+[[panes]]
+id = "add"
+title = "Add Command"
+description = "Type a command and press Enter to save it"
+placement = "popup"
+width = 70
+height = 5
+command = ["./bin/hcc", "add"]

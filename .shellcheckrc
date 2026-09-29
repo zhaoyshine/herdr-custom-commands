@@ -1,0 +1,3 @@
+# The launcher and the build script are the only shell in the project, and both
+# are held to every optional check.
+enable=all

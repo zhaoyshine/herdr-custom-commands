@@ -1,0 +1,33 @@
+#!/bin/sh
+# Entry point every manifest command points at.
+#
+# Herdr cannot express a per-architecture command, and the macOS binaries cannot
+# be merged into one universal file without a macOS toolchain, so this launcher
+# picks one at runtime.
+set -eu
+unset CDPATH
+
+dir=$(dirname -- "$0")
+dir=$(cd -- "${dir}" && pwd)
+system=$(uname -s) || system=
+machine=$(uname -m) || machine=
+
+case "${system}" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *)
+    printf '%s\n' "herdr-custom-commands: unsupported system ${system}" >&2
+    exit 1
+    ;;
+esac
+
+case "${machine}" in
+  x86_64 | amd64) arch=amd64 ;;
+  arm64 | aarch64) arch=arm64 ;;
+  *)
+    printf '%s\n' "herdr-custom-commands: unsupported architecture ${machine}" >&2
+    exit 1
+    ;;
+esac
+
+exec "${dir}/hcc-${os}-${arch}" "$@"
