@@ -1,9 +1,12 @@
-package main
+package panel
 
 import (
-	"path/filepath"
 	"strings"
+
+	"github.com/zhaoyshine/herdr-custom-commands/internal/env"
 )
+
+const Label = "Custom Commands"
 
 // truncate cuts a string to at most max runes, marking the cut with an ellipsis.
 // Runes, not display cells: a wide CJK character counts as one.
@@ -29,9 +32,11 @@ func pad(s string, width int) string {
 // shortPath keeps the tail of a path rather than the head: the last segments
 // say which project this is, the leading ones rarely do.
 func shortPath(path string, max int) string {
-	home := home()
-	if home != "/" && strings.HasPrefix(path, home+"/") {
-		path = "~" + strings.TrimPrefix(path, home)
+	home := env.Home()
+	if home != "/" {
+		if rest, ok := strings.CutPrefix(path, home+"/"); ok {
+			path = "~/" + rest
+		}
 	}
 	if len([]rune(path)) <= max {
 		return path
@@ -45,13 +50,4 @@ func shortPath(path string, max int) string {
 		return "…" + tail[i+1:]
 	}
 	return "…" + tail
-}
-
-const panelLabel = "Custom Commands"
-
-func sameFile(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	return filepath.Clean(a) == filepath.Clean(b)
 }

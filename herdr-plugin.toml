@@ -1,6 +1,6 @@
 id = "herdr-custom-commands"
 name = "Herdr Custom Commands"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.7.4"
 description = "A panel of your own commands beside every workspace"
 platforms = ["linux", "macos"]

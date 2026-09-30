@@ -1,4 +1,6 @@
-package main
+// Package terminal owns the pane's tty: raw mode, timed input decoding, and
+// screen writes.
+package terminal
 
 import (
 	"bufio"
@@ -13,44 +15,46 @@ import (
 )
 
 const (
-	seqAltScreen = "\033[?1049h"
-	seqNoWrap    = "\033[?7l"
-	seqMouseOn   = "\033[?1000h\033[?1003h\033[?1006h"
-	seqMouseOff  = "\033[?1003l\033[?1006l\033[?1000l"
-	seqWrapOn    = "\033[?7h"
-	seqCursorOff = "\033[?25l"
-	seqAltOff    = "\033[?1049l"
-	seqReset     = "\033[0m"
-	seqEraseRow  = "\033[2K"
-	seqEraseDown = "\033[J"
-	seqHome      = "\033[H"
+	SeqAltScreen = "\033[?1049h"
+	SeqNoWrap    = "\033[?7l"
+	SeqMouseOn   = "\033[?1000h\033[?1003h\033[?1006h"
+	SeqMouseOff  = "\033[?1003l\033[?1006l\033[?1000l"
+	SeqWrapOn    = "\033[?7h"
+	SeqCursorOff = "\033[?25l"
+	SeqAltOff    = "\033[?1049l"
+	SeqReset     = "\033[0m"
+	SeqEraseRow  = "\033[2K"
+	SeqEraseDown = "\033[J"
+	SeqHome      = "\033[H"
 )
 
-var errTimeout = errors.New("no input within the deadline")
-var errClosed = errors.New("input closed")
+var ErrTimeout = errors.New("no input within the deadline")
+var ErrClosed = errors.New("input closed")
 
 // escapeGap is how long a sequence started by Escape waits for its next byte.
 const escapeGap = 40 * time.Millisecond
 
-// terminal owns the pane's tty; every method is safe to call after close.
-type terminal struct {
+// Terminal owns the pane's tty; every method is safe to call after Shutdown.
+// The signal handler writes from its own goroutine, so writes are serialized.
+type Terminal struct {
+	mu    sync.Mutex
 	out   *bufio.Writer
 	input *byteReader
 	once  sync.Once
 }
 
-func openTerminal() *terminal {
-	return &terminal{
+func Open() *Terminal {
+	return &Terminal{
 		out:   bufio.NewWriter(os.Stdout),
 		input: newByteReader(os.Stdin),
 	}
 }
 
-func (t *terminal) raw() {
+func (t *Terminal) Raw() {
 	_, _ = stty("-echo", "-icanon", "min", "1", "time", "0")
 }
 
-func saveModes() string {
+func SaveModes() string {
 	out, err := stty("-g")
 	if err != nil {
 		return ""
@@ -58,17 +62,13 @@ func saveModes() string {
 	return out
 }
 
-func (t *terminal) cleanupOnExit(saved string) {
-	installCleanup(func() {
-		t.write(seqMouseOff + seqWrapOn)
-		t.write(seqReset + seqAltOff)
-		t.restore(saved)
-	})
-}
-
-func (t *terminal) restore(saved string) {
+// Shutdown tears the tty back down on the way out: mouse off, wrap and modes
+// restored, alt screen left.
+func (t *Terminal) Shutdown(saved string) {
+	t.Write(SeqMouseOff + SeqWrapOn)
+	t.Write(SeqReset + SeqAltOff)
 	t.once.Do(func() {
-		_ = t.flush()
+		_ = t.Flush()
 		if saved != "" {
 			if _, err := stty(saved); err == nil {
 				return
@@ -78,18 +78,22 @@ func (t *terminal) restore(saved string) {
 	})
 }
 
-func (t *terminal) write(s string) {
+func (t *Terminal) Write(s string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	_, _ = t.out.WriteString(s)
 }
 
-func (t *terminal) flush() error {
+func (t *Terminal) Flush() error {
 	if t.out == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.out.Flush()
 }
 
-func size() (rows, cols int) {
+func Size() (rows, cols int) {
 	rows, cols = 24, 80
 	out, err := stty("size")
 	if err != nil {
@@ -115,16 +119,16 @@ func stty(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-type event struct {
-	key   string
-	mouse *mouseEvent
+type Event struct {
+	Key   string
+	Mouse *MouseEvent
 }
 
-type mouseEvent struct {
-	button  int
-	x       int
-	y       int
-	release bool
+type MouseEvent struct {
+	Button  int
+	X       int
+	Y       int
+	Release bool
 }
 
 // byteReader turns a blocking stream into timed reads. A goroutine owns the
@@ -165,13 +169,13 @@ func (b *byteReader) readByte(timeout time.Duration) (byte, error) {
 		select {
 		case chunk, ok := <-b.chunks:
 			if !ok {
-				b.err = errClosed
-				return 0, errClosed
+				b.err = ErrClosed
+				return 0, ErrClosed
 			}
 			b.buf = chunk
 			return b.pop(), nil
 		default:
-			return 0, errTimeout
+			return 0, ErrTimeout
 		}
 	}
 	timer := time.NewTimer(timeout)
@@ -179,13 +183,13 @@ func (b *byteReader) readByte(timeout time.Duration) (byte, error) {
 	select {
 	case chunk, ok := <-b.chunks:
 		if !ok {
-			b.err = errClosed
-			return 0, errClosed
+			b.err = ErrClosed
+			return 0, ErrClosed
 		}
 		b.buf = chunk
 		return b.pop(), nil
 	case <-timer.C:
-		return 0, errTimeout
+		return 0, ErrTimeout
 	}
 }
 
@@ -197,23 +201,23 @@ func (b *byteReader) pop() byte {
 
 // Enter arrives as a newline, not a carriage return: raw mode turns off line
 // editing but leaves ICRNL alone, so the tty maps one to the other.
-func (t *terminal) readEvent(timeout time.Duration) (*event, error) {
+func (t *Terminal) ReadEvent(timeout time.Duration) (*Event, error) {
 	c, err := t.input.readByte(timeout)
 	if err != nil {
 		return nil, err
 	}
 	switch c {
 	case '\r', '\n':
-		return &event{key: keyEnter}, nil
+		return &Event{Key: KeyEnter}, nil
 	case ' ':
-		return &event{key: keySpace}, nil
+		return &Event{Key: KeySpace}, nil
 	case 0x1b:
 		return t.readEscape()
 	}
-	return &event{key: t.readRune(c)}, nil
+	return &Event{Key: t.readRune(c)}, nil
 }
 
-func (t *terminal) readRune(lead byte) string {
+func (t *Terminal) readRune(lead byte) string {
 	width := 1
 	switch {
 	case lead&0xe0 == 0xc0:
@@ -238,40 +242,40 @@ func (t *terminal) readRune(lead byte) string {
 }
 
 const (
-	keyEnter = "ENTER"
-	keySpace = "SPACE"
-	keyEsc   = "ESC"
-	keyUp    = "UP"
-	keyDown  = "DOWN"
-	keyLeft  = "LEFT"
-	keyRight = "RIGHT"
-	keyHome  = "HOME"
-	keyEnd   = "END"
-	keyNone  = "NONE"
+	KeyEnter = "ENTER"
+	KeySpace = "SPACE"
+	KeyEsc   = "ESC"
+	KeyUp    = "UP"
+	KeyDown  = "DOWN"
+	KeyLeft  = "LEFT"
+	KeyRight = "RIGHT"
+	KeyHome  = "HOME"
+	KeyEnd   = "END"
+	KeyNone  = "NONE"
 )
 
 // readEscape consumes a whole escape sequence. A sequence longer than the ones
 // decoded here is still consumed: the bytes after the one that identified it
 // would otherwise come back as typed input.
-func (t *terminal) readEscape() (*event, error) {
+func (t *Terminal) readEscape() (*Event, error) {
 	// A real sequence arrives as one write, so the next byte is already waiting
 	// when the terminal sent more than Escape.
 	next, err := t.input.readByte(escapeGap)
 	if err != nil {
-		return &event{key: keyEsc}, nil
+		return &Event{Key: KeyEsc}, nil
 	}
 	if next == 'O' {
-		return &event{key: t.readSS3()}, nil
+		return &Event{Key: t.readSS3()}, nil
 	}
 	if next != '[' {
-		return &event{key: keyNone}, nil
+		return &Event{Key: KeyNone}, nil
 	}
 	var params [12]byte
 	n := 0
 	for {
 		c, err := t.input.readByte(escapeGap)
 		if err != nil {
-			return &event{key: keyNone}, nil
+			return &Event{Key: KeyNone}, nil
 		}
 		if c >= 0x30 && c <= 0x3f {
 			if n < len(params) {
@@ -282,20 +286,20 @@ func (t *terminal) readEscape() (*event, error) {
 		}
 		if c == 'M' || c == 'm' {
 			if n > 0 && params[0] == '<' {
-				return &event{mouse: mouseFromParams(params[1:n], c == 'm')}, nil
+				return &Event{Mouse: mouseFromParams(params[1:n], c == 'm')}, nil
 			}
-			return &event{key: keyNone}, nil
+			return &Event{Key: KeyNone}, nil
 		}
-		return &event{key: csiKey(c, params[:n])}, nil
+		return &Event{Key: csiKey(c, params[:n])}, nil
 	}
 }
 
 // readSS3 decodes the ESC O form, which some terminals use for the arrows and
 // the home/end keys.
-func (t *terminal) readSS3() string {
+func (t *Terminal) readSS3() string {
 	c, err := t.input.readByte(escapeGap)
 	if err != nil {
-		return keyNone
+		return KeyNone
 	}
 	return csiKey(c, nil)
 }
@@ -303,26 +307,26 @@ func (t *terminal) readSS3() string {
 func csiKey(final byte, params []byte) string {
 	switch final {
 	case 'A':
-		return keyUp
+		return KeyUp
 	case 'B':
-		return keyDown
+		return KeyDown
 	case 'C':
-		return keyRight
+		return KeyRight
 	case 'D':
-		return keyLeft
+		return KeyLeft
 	case 'H':
-		return keyHome
+		return KeyHome
 	case 'F':
-		return keyEnd
+		return KeyEnd
 	case '~':
 		switch firstParam(params) {
 		case 1, 7:
-			return keyHome
+			return KeyHome
 		case 4, 8:
-			return keyEnd
+			return KeyEnd
 		}
 	}
-	return keyNone
+	return KeyNone
 }
 
 // firstParam is the number before the first ';' of a CSI.
@@ -338,7 +342,7 @@ func firstParam(params []byte) int {
 }
 
 // mouseFromParams decodes the SGR body: button ; x ; y.
-func mouseFromParams(body []byte, release bool) *mouseEvent {
+func mouseFromParams(body []byte, release bool) *MouseEvent {
 	values := [3]int{}
 	field := 0
 	for _, c := range body {
@@ -349,27 +353,27 @@ func mouseFromParams(body []byte, release bool) *mouseEvent {
 			values[field] = values[field]*10 + int(c-'0')
 		}
 	}
-	return &mouseEvent{button: values[0], x: values[1], y: values[2], release: release}
+	return &MouseEvent{Button: values[0], X: values[1], Y: values[2], Release: release}
 }
 
-// frame joins the rows of one screen update with newlines and never terminates
+// Frame joins the rows of one screen update with newlines and never terminates
 // the last one, so a full-height frame cannot push the terminal into scrolling.
-type frame struct {
+type Frame struct {
 	buf   []byte
 	first bool
 }
 
-func newFrame() *frame {
-	return &frame{first: true}
+func NewFrame() *Frame {
+	return &Frame{first: true}
 }
 
-func (f *frame) row(s string) {
+func (f *Frame) Row(s string) {
 	if !f.first {
 		f.buf = append(f.buf, '\n')
 	}
 	f.first = false
-	f.buf = append(f.buf, seqEraseRow...)
+	f.buf = append(f.buf, SeqEraseRow...)
 	f.buf = append(f.buf, s...)
 }
 
-func (f *frame) bytes() []byte { return f.buf }
+func (f *Frame) Bytes() []byte { return f.buf }

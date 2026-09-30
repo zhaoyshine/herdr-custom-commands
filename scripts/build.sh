@@ -14,5 +14,5 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
   arch=${target##*/}
   printf 'building bin/hcc-%s-%s\n' "${os}" "${arch}"
   CGO_ENABLED=0 GOOS=${os} GOARCH=${arch} \
-    go build -trimpath -buildvcs=false -ldflags '-s -w' -o "bin/hcc-${os}-${arch}" .
+    go build -trimpath -buildvcs=false -ldflags '-s -w' -o "bin/hcc-${os}-${arch}" ./cmd/hcc
 done

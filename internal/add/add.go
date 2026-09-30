@@ -1,10 +1,14 @@
-package main
+package add
 
 import (
 	"errors"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/zhaoyshine/herdr-custom-commands/internal/app"
+	"github.com/zhaoyshine/herdr-custom-commands/internal/env"
+	"github.com/zhaoyshine/herdr-custom-commands/internal/terminal"
 )
 
 const (
@@ -13,52 +17,52 @@ const (
 )
 
 // Raw mode, not line mode: Escape closes the popup without a newline.
-func runAdd(e env) int {
-	term := openTerminal()
-	saved := saveModes()
-	term.cleanupOnExit(saved)
+func Run(e env.Env) int {
+	term := terminal.Open()
+	saved := terminal.SaveModes()
+	app.OnCleanup(func() { term.Shutdown(saved) })
 
-	term.write(seqCursorOff + "\n  Command: ")
-	term.raw()
-	_ = term.flush()
+	term.Write(terminal.SeqCursorOff + "\n  Command: ")
+	term.Raw()
+	_ = term.Flush()
 
 	var line []rune
 input:
 	for {
-		ev, err := term.readEvent(time.Second)
-		if errors.Is(err, errClosed) {
+		ev, err := term.ReadEvent(time.Second)
+		if errors.Is(err, terminal.ErrClosed) {
 			break
 		}
-		if errors.Is(err, errTimeout) {
+		if errors.Is(err, terminal.ErrTimeout) {
 			continue
 		}
-		if ev.mouse != nil {
+		if ev.Mouse != nil {
 			continue
 		}
-		switch ev.key {
-		case keyEsc:
+		switch ev.Key {
+		case terminal.KeyEsc:
 			return 0
-		case keyEnter:
+		case terminal.KeyEnter:
 			break input
-		case keySpace:
+		case terminal.KeySpace:
 			line = append(line, ' ')
-			term.write(" ")
-		case keyUp, keyDown, keyLeft, keyRight, keyHome, keyEnd, keyNone:
+			term.Write(" ")
+		case terminal.KeyUp, terminal.KeyDown, terminal.KeyLeft, terminal.KeyRight, terminal.KeyHome, terminal.KeyEnd, terminal.KeyNone:
 		case keyBackspace, keyCtrlH:
 			if len(line) > 0 {
 				line = line[:len(line)-1]
-				term.write("\b \b")
+				term.Write("\b \b")
 			}
 		default:
-			line = append(line, []rune(ev.key)...)
-			term.write(ev.key)
+			line = append(line, []rune(ev.Key)...)
+			term.Write(ev.Key)
 		}
-		_ = term.flush()
+		_ = term.Flush()
 	}
 
 	command := strings.TrimSuffix(string(line), "\r")
 	if strings.ReplaceAll(command, " ", "") != "" && !strings.HasPrefix(command, "#") {
-		appendLine(e.commandsFile(), command)
+		appendLine(e.CommandsFile(), command)
 	}
 	return 0
 }
